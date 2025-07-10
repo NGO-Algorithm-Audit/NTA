@@ -1,0 +1,687 @@
+---
+title: "Exploratory Data Analysis: Simulated CBS Data"
+author: "Data Analysis"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    cache: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  cache = TRUE
+)
+```
+
+# Introduction
+
+This notebook explores the simulated dataset containing demographic variables from CBS (Statistics Netherlands) and synthetic features X1-X10 with target variable Y.
+
+# Data Loading and Preparation
+
+```{r load-data}
+# Load required libraries
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(GGally)
+library(tidyr)
+library(knitr)
+library(DT)
+library(tibble)
+library(purrr)
+library(scales)
+
+# Load data from CSV if available, otherwise run simulation script
+if(file.exists("../data/simulated_data.csv")) {
+  simulated_data <- read.csv("../data/simulated_data.csv")
+  cat("Loaded data from ../data/simulated_data.csv\n")
+} else {
+  source("../scripts/simulate_data.R")
+  cat("Generated new data using ../scripts/simulate_data.R\n")
+}
+
+# Select variables of interest for analysis
+analysis_vars <- c("x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "y")
+eda_data <- simulated_data |> 
+  select(all_of(analysis_vars))
+
+# Display basic info about the dataset
+cat("Dataset dimensions:", nrow(eda_data), "rows x", ncol(eda_data), "columns\n")
+```
+
+# Summary Statistics
+
+## Overall Summary
+
+```{r summary-stats}
+# Summary statistics for all variables
+summary_stats <- eda_data |>
+  summarise(
+    across(everything(), 
+           list(
+             mean = ~ mean(.x, na.rm = TRUE),
+             median = ~ median(.x, na.rm = TRUE),
+             sd = ~ sd(.x, na.rm = TRUE),
+             min = ~ min(.x, na.rm = TRUE),
+             max = ~ max(.x, na.rm = TRUE),
+             missing = ~ sum(is.na(.x))
+           ))
+  ) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "value") |>
+  separate(variable, into = c("var", "stat"), sep = "_") |>
+  pivot_wider(names_from = stat, values_from = value)
+
+kable(summary_stats, digits = 3, caption = "Summary Statistics for X1-X10 and Y")
+```
+
+## Variable Types
+
+```{r variable-types}
+# Identify variable types
+binary_vars <- eda_data |>
+  select(where(~ all(.x %in% c(0, 1, NA)))) |>
+  names()
+
+categorical_vars <- c("x9", "x10")
+continuous_vars <- setdiff(names(eda_data), c(binary_vars, categorical_vars))
+
+cat("Binary variables:", paste(binary_vars, collapse = ", "), "\n")
+cat("Categorical variables:", paste(categorical_vars, collapse = ", "), "\n")
+cat("Continuous variables:", paste(continuous_vars, collapse = ", "), "\n")
+```
+
+# Variable Distributions
+
+## Binary Variables
+
+```{r binary-distributions}
+if(length(binary_vars) > 0) {
+  binary_data <- eda_data |>
+    select(all_of(binary_vars)) |>
+    pivot_longer(everything(), names_to = "variable", values_to = "value") |>
+    group_by(variable, value) |>
+    summarise(count = n(), .groups = "drop") |>
+    group_by(variable) |>
+    mutate(proportion = count / sum(count))
+  
+  # Bar plot for binary variables
+  ggplot(binary_data, aes(x = factor(value), y = proportion, fill = factor(value))) +
+    geom_col() +
+    facet_wrap(~variable, scales = "free") +
+    labs(title = "Distribution of Binary Variables",
+         x = "Value", y = "Proportion", fill = "Value") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  # Summary table for binary variables
+  binary_summary <- binary_data |>
+    filter(value == 1) |>
+    select(variable, proportion) |>
+    arrange(desc(proportion))
+  
+  kable(binary_summary, digits = 3, caption = "Proportion of 1s in Binary Variables")
+}
+```
+
+## Continuous Variables
+
+```{r continuous-distributions}
+if(length(continuous_vars) > 0) {
+  # Histograms for continuous variables
+  continuous_data <- eda_data |>
+    select(all_of(continuous_vars)) |>
+    pivot_longer(everything(), names_to = "variable", values_to = "value")
+  
+  ggplot(continuous_data, aes(x = value)) +
+    geom_histogram(bins = 30, fill = "skyblue", color = "white", alpha = 0.7) +
+    facet_wrap(~variable, scales = "free") +
+    labs(title = "Distribution of Continuous Variables",
+         x = "Value", y = "Frequency") +
+    theme_minimal()
+  
+  # Box plots for continuous variables
+  ggplot(continuous_data, aes(x = variable, y = value, fill = variable)) +
+    geom_boxplot() +
+    labs(title = "Box Plots of Continuous Variables",
+         x = "Variable", y = "Value") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none")
+}
+```
+
+## Categorical Variables
+
+```{r categorical-distributions}
+if(length(categorical_vars) > 0) {
+  # Frequency distributions for categorical variables
+  categorical_data <- eda_data |>
+    select(all_of(categorical_vars)) |>
+    pivot_longer(everything(), names_to = "variable", values_to = "value") |>
+    group_by(variable, value) |>
+    summarise(count = n(), .groups = "drop") |>
+    group_by(variable) |>
+    mutate(proportion = count / sum(count))
+  
+  # Detailed frequency table for each variable
+  for(var in categorical_vars) {
+    cat("\n### Frequency Table for", var, "\n")
+    
+    freq_table <- eda_data |>
+      count(.data[[var]], name = "frequency") |>
+      mutate(
+        percentage = round(frequency / sum(frequency) * 100, 2),
+        cumulative_freq = cumsum(frequency),
+        cumulative_perc = round(cumulative_freq / sum(frequency) * 100, 2)
+      ) |>
+      rename(!!var := 1)
+    
+    print(kable(freq_table, 
+                caption = paste("Frequency Distribution of", var),
+                col.names = c(var, "Frequency", "Percentage (%)", "Cumulative Freq", "Cumulative %")))
+  }
+  
+  # Individual proportion bar plots for each categorical variable
+  for(var in categorical_vars) {
+    var_data <- categorical_data |> filter(variable == var)
+    
+    # Proportion bar plot
+    prop_plot <- ggplot(var_data, aes(x = factor(value), y = proportion, fill = factor(value))) +
+      geom_col(alpha = 0.8, width = 0.7) +
+      geom_text(aes(label = paste0(round(proportion * 100, 1), "%")), 
+                vjust = -0.3, size = 4, fontface = "bold") +
+      labs(title = paste("Proportion Distribution of", var),
+           x = paste(var, "Categories"), y = "Proportion", fill = "Category") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+            plot.title = element_text(size = 12, face = "bold"),
+            legend.position = "none") +
+      scale_fill_brewer(type = "qual", palette = "Set1") +
+      scale_y_continuous(labels = scales::percent_format())
+    
+    print(prop_plot)
+  }
+}
+```
+
+# Correlation Analysis
+
+## Correlation Matrix
+
+```{r correlation-matrix}
+# Calculate correlation matrix
+cor_matrix <- cor(eda_data, use = "complete.obs")
+
+# Visualize correlation matrix
+corrplot(cor_matrix, 
+         method = "color", 
+         type = "upper", 
+         tl.cex = 0.8,
+         tl.col = "black",
+         title = "Correlation Matrix: X1-X10 and Y",
+         mar = c(0,0,2,0))
+```
+
+## Correlation with Target Variable Y
+
+```{r correlation-with-y}
+# For categorical variables (x9, x10), convert to numeric for correlation
+eda_data_numeric <- eda_data |>
+  mutate(
+    x9_numeric = as.numeric(as.factor(x9)),
+    x10_numeric = as.numeric(as.factor(x10))
+  ) |>
+  select(-x9, -x10) |>
+  rename(x9 = x9_numeric, x10 = x10_numeric)
+
+# Calculate correlation matrix with numeric versions
+cor_matrix_numeric <- cor(eda_data_numeric, use = "complete.obs")
+
+# Correlations with Y
+cor_with_y <- cor_matrix_numeric[,"y"] |>
+  as.data.frame() |>
+  rownames_to_column("variable") |>
+  rename(correlation = 2) |>
+  filter(variable != "y") |>
+  mutate(
+    variable_type = case_when(
+      variable %in% c("x9", "x10") ~ "Categorical (as numeric)",
+      variable %in% c("x1", "x2", "x3", "x4") ~ "Binary",
+      TRUE ~ "Continuous"
+    )
+  ) |>
+  arrange(desc(abs(correlation)))
+
+# Plot correlations with Y
+ggplot(cor_with_y, aes(x = reorder(variable, abs(correlation)), y = correlation, fill = variable_type)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Correlation of X1-X10 with Target Variable Y",
+       x = "Variable", y = "Correlation with Y", fill = "Variable Type") +
+  theme_minimal()
+
+kable(cor_with_y, digits = 3, caption = "Correlations with Target Variable Y")
+
+# Note about categorical variables
+cat("Note: X9 and X10 are categorical variables converted to numeric for correlation calculation.\n")
+cat("Correlation for categorical variables should be interpreted cautiously.\n")
+```
+
+# Demographic Correlations
+
+## Correlations between X1-X10 and Demographics
+
+```{r demographic-correlations}
+# Select demographic variables and X1-X10
+demographic_vars <- c("Nationaliteiten_label", "Geslacht_label", "Leeftijd_label")
+feature_vars <- paste0("x", 1:10)
+
+# Get demographic data with dummy variables
+demographic_data <- simulated_data |>
+  select(all_of(c(demographic_vars, feature_vars)))
+
+# Calculate correlations between features and demographic dummy variables
+demographic_dummies <- simulated_data |>
+  select(contains("_label_")) |>
+  select(-contains("combination")) |>
+  names()
+
+# Create correlation matrix between features and demographic dummies
+if(length(demographic_dummies) > 0) {
+  demo_feature_data <- simulated_data |>
+    select(all_of(c(feature_vars, demographic_dummies)))
+  
+  demo_cor_matrix <- cor(demo_feature_data, use = "complete.obs")
+  
+  # Extract correlations between features and demographics
+  feature_demo_cors <- demo_cor_matrix[feature_vars, demographic_dummies, drop = FALSE]
+  
+  # Visualize correlations
+  corrplot(feature_demo_cors, 
+           method = "color", 
+           is.corr = TRUE,
+           tl.cex = 0.7,
+           tl.col = "black",
+           title = "Correlations: X1-X10 with Demographic Variables",
+           mar = c(0,0,2,0))
+  
+  # Create summary table
+  feature_demo_long <- feature_demo_cors |>
+    as.data.frame() |>
+    rownames_to_column("feature") |>
+    pivot_longer(cols = -feature, names_to = "demographic", values_to = "correlation") |>
+    arrange(desc(abs(correlation)))
+  
+  kable(head(feature_demo_long, 15), digits = 3, 
+        caption = "Top 15 Correlations between Features and Demographics")
+}
+```
+
+## Feature Distributions by Demographics
+
+### Gender
+```{r features-by-demographics-gender}
+# Binary vars by gender
+if(length(binary_vars) > 0) {
+  binary_demo_data <- simulated_data |>
+    select(all_of(c(binary_vars, "Geslacht_label"))) |>
+    pivot_longer(cols = all_of(binary_vars), names_to = "feature", values_to = "value") |>
+    group_by(feature, Geslacht_label, value) |>
+    summarise(count = n(), .groups = "drop") |>
+    group_by(feature, Geslacht_label) |>
+    mutate(proportion = count / sum(count)) |>
+    filter(value == 1)
+  
+  ggplot(binary_demo_data, aes(x = Geslacht_label, y = proportion, fill = Geslacht_label)) +
+    geom_col() +
+    facet_wrap(~feature) +
+    labs(title = "Binary Features by Gender",
+         x = "Gender", y = "Proportion of 1s", fill = "Gender") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+# Continuous features by gender
+if(length(continuous_vars) > 0) {
+  continuous_demo_data <- simulated_data |>
+    select(all_of(c(continuous_vars, "Geslacht_label"))) |>
+    pivot_longer(cols = all_of(continuous_vars), names_to = "feature", values_to = "value")
+  
+  ggplot(continuous_demo_data, aes(x = Geslacht_label, y = value, fill = Geslacht_label)) +
+    geom_boxplot() +
+    facet_wrap(~feature, scales = "free_y") +
+    labs(title = "Continuous Features by Gender",
+         x = "Gender", y = "Value", fill = "Gender") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "bottom")
+}
+
+# Categorical features by gender
+if(length(categorical_vars) > 0){
+  categorical_demo_data <- simulated_data |>
+    select(all_of(c(categorical_vars, "Geslacht_label"))) |>
+    pivot_longer(cols = all_of(categorical_vars), names_to = "feature", values_to = "value") |>
+    group_by(feature, Geslacht_label, value) |>
+    summarise(count = n(), .groups = "drop") |>
+    group_by(feature, Geslacht_label) |>
+    mutate(proportion = count / sum(count)) 
+  
+  ggplot(categorical_demo_data, aes(x = value, y = proportion, fill = Geslacht_label)) + 
+    geom_bar(position="dodge", stat="identity") +
+    facet_wrap(~feature) +
+    labs(title = "Categorical Features by Gender",
+         x = "Category", y = "Proportion", fill = "Gender") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+```
+
+### Nationality
+```{r features-by-demographics-nationality}
+# Binary vars by nationality
+if(length(binary_vars) > 0) {
+  binary_demo_data <- simulated_data |>
+    select(all_of(c(binary_vars, "Nationaliteiten_label"))) |>
+    pivot_longer(cols = all_of(binary_vars), names_to = "feature", values_to = "value") |>
+    group_by(feature, Nationaliteiten_label, value) |>
+    summarise(count = n(), .groups = "drop") |>
+    group_by(feature, Nationaliteiten_label) |>
+    mutate(proportion = count / sum(count)) |>
+    filter(value == 1)
+  
+  ggplot(binary_demo_data, aes(x = Nationaliteiten_label, y = proportion, fill = Nationaliteiten_label)) +
+    geom_col() +
+    facet_wrap(~feature) +
+    labs(title = "Binary Features by Nationality",
+         x = "Nationality", y = "Proportion of 1s", fill = "Nationality") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+# Continuous features by nationality
+if(length(continuous_vars) > 0) {
+  continuous_demo_data <- simulated_data |>
+    select(all_of(c(continuous_vars, "Nationaliteiten_label"))) |>
+    pivot_longer(cols = all_of(continuous_vars), names_to = "feature", values_to = "value")
+  
+  ggplot(continuous_demo_data, aes(x = Nationaliteiten_label, y = value, fill = Nationaliteiten_label)) +
+    geom_boxplot() +
+    facet_wrap(~feature, scales = "free_y") +
+    labs(title = "Continuous Features by Nationality",
+         x = "Nationality", y = "Value", fill = "Nationality") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "bottom")
+}
+
+# Categorical features by gender
+if(length(categorical_vars) > 0){
+  categorical_demo_data <- simulated_data |>
+    select(all_of(c(categorical_vars, "Nationaliteiten_label"))) |>
+    pivot_longer(cols = all_of(categorical_vars), names_to = "feature", values_to = "value") |>
+    group_by(feature, Nationaliteiten_label, value) |>
+    summarise(count = n(), .groups = "drop") |>
+    group_by(feature, Nationaliteiten_label) |>
+    mutate(proportion = count / sum(count)) 
+  
+  ggplot(categorical_demo_data, aes(x = value, y = proportion, fill = Nationaliteiten_label)) + 
+    geom_bar(position="dodge", stat="identity") +
+    facet_wrap(~feature) +
+    labs(title = "Categorical Features by Nationality",
+         x = "Category", y = "Proportion", fill = "Nationality") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+```
+
+## Age 
+
+```{r age-group-analysis}
+# Create age groups for easier analysis
+age_groups <- c("15-25", "25-35", "35-45", "45-55", "55-65", "65-75")
+simulated_data_age <- simulated_data |>
+  mutate(
+    age_group = case_when(
+      Leeftijd_label %in% c("15 tot 20 jaar", "20 tot 25 jaar") ~ "15-25",
+      Leeftijd_label %in% c("25 tot 30 jaar", "30 tot 35 jaar") ~ "25-35",
+      Leeftijd_label %in% c("35 tot 40 jaar", "40 tot 45 jaar") ~ "35-45",
+      Leeftijd_label %in% c("45 tot 50 jaar", "50 tot 55 jaar") ~ "45-55",
+      Leeftijd_label %in% c("55 tot 60 jaar", "60 tot 65 jaar") ~ "55-65",
+      Leeftijd_label %in% c("65 tot 70 jaar", "70 tot 75 jaar") ~ "65-75",
+      TRUE ~ "Other"
+    )
+  )
+
+# Binary vars by age
+if(length(binary_vars) > 0) {
+  binary_demo_data <- simulated_data_age |>
+    select(all_of(c(binary_vars, "age_group"))) |>
+    pivot_longer(cols = all_of(binary_vars), names_to = "feature", values_to = "value") |>
+    group_by(feature, age_group, value) |>
+    summarise(count = n(), .groups = "drop") |>
+    group_by(feature, age_group) |>
+    mutate(proportion = count / sum(count)) |>
+    filter(value == 1)
+  
+  ggplot(binary_demo_data, aes(x = age_group, y = proportion, fill = age_group)) +
+    geom_col() +
+    facet_wrap(~feature) +
+    labs(title = "Binary Features by Age",
+         x = "Age Group", y = "Proportion of 1s", fill = "Age Group") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+# Continuous features by age
+if(length(continuous_vars) > 0) {
+  continuous_demo_data <- simulated_data_age |>
+    select(all_of(c(continuous_vars, "age_group"))) |>
+    pivot_longer(cols = all_of(continuous_vars), names_to = "feature", values_to = "value")
+  
+  ggplot(continuous_demo_data, aes(x = age_group, y = value, fill = age_group)) +
+    geom_boxplot() +
+    facet_wrap(~feature, scales = "free_y") +
+    labs(title = "Continuous Features by Age",
+         x = "Age Group", y = "Value", fill = "Age Group") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "bottom")
+}
+
+# Categorical features by age
+if(length(categorical_vars) > 0){
+  categorical_demo_data <- simulated_data_age |>
+    select(all_of(c(categorical_vars, "age_group"))) |>
+    pivot_longer(cols = all_of(categorical_vars), names_to = "feature", values_to = "value") |>
+    group_by(feature, age_group, value) |>
+    summarise(count = n(), .groups = "drop") |>
+    group_by(feature, age_group) |>
+    mutate(proportion = count / sum(count)) 
+  
+  ggplot(categorical_demo_data, aes(x = value, y = proportion, fill = age_group)) + 
+    geom_bar(position="dodge", stat="identity") +
+    facet_wrap(~feature) +
+    labs(title = "Categorical Features by Age",
+         x = "Category", y = "Proportion", fill = "Age Group") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+# Relationship Analysis
+
+## Correlation of X1-X10 compared to Y Summary
+
+```{r correlation-summary}
+# Create a more detailed correlation summary
+correlation_summary <- eda_data |>
+  select(all_of(feature_vars), y) |>
+  cor(use = "complete.obs") |>
+  as.data.frame() |>
+  rownames_to_column("variable") |>
+  select(variable, y) |>
+  filter(variable != "y") |>
+  mutate(
+    abs_correlation = abs(y),
+  ) |>
+  arrange(desc(abs_correlation))
+
+# Display correlation table
+kable(correlation_summary, digits = 3, 
+      caption = "Correlation Summary: X1-X10 with Y")
+
+# Correlation bar plot
+ggplot(correlation_summary, aes(x = reorder(variable, abs_correlation), 
+                               y = y)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Correlation Strength: X1-X10 with Y",
+       x = "Variable", y = "Correlation with Y") +
+  theme_minimal()
+```
+
+## Target Variable Analysis
+
+```{r target-analysis}
+# Distribution of Y
+y_dist <- table(eda_data$y)
+y_prop <- prop.table(y_dist)
+
+cat("Target Variable Y Distribution:\n")
+cat("Y = 0:", y_dist[1], "(", round(y_prop[1] * 100, 1), "%)\n")
+cat("Y = 1:", y_dist[2], "(", round(y_prop[2] * 100, 1), "%)\n")
+
+# Bar plot of Y distribution
+ggplot(eda_data, aes(x = factor(y))) +
+  geom_bar(fill = "steelblue", alpha = 0.7) +
+  labs(title = "Distribution of Target Variable Y",
+       x = "Y", y = "Count") +
+  theme_minimal()
+```
+
+## Predictors by Target Variable
+
+```{r predictors-by-target}
+# Box plots of continuous predictors by Y
+if(length(continuous_vars) > 1) {
+  continuous_by_y <- eda_data |>
+    select(all_of(c(continuous_vars, "y"))) |>
+    pivot_longer(cols = -y, names_to = "variable", values_to = "value")
+  
+  ggplot(continuous_by_y, aes(x = factor(y), y = value, fill = factor(y))) +
+    geom_boxplot() +
+    facet_wrap(~variable, scales = "free_y") +
+    labs(title = "Distribution of Continuous Predictors by Target Y",
+         x = "Target Y", y = "Value", fill = "Y") +
+    theme_minimal()
+}
+
+# Proportion plots for binary predictors by Y
+if(length(binary_vars) > 1) {
+  binary_by_y <- eda_data |>
+    select(all_of(c(binary_vars, "y"))) |>
+    pivot_longer(cols = -y, names_to = "variable", values_to = "value") |>
+    group_by(variable, y, value) |>
+    summarise(count = n(), .groups = "drop") |>
+    group_by(variable, y) |>
+    mutate(proportion = count / sum(count))
+  
+  # Focus on proportion of 1s
+  binary_props <- binary_by_y |>
+    filter(value == 1) |>
+    select(variable, y, proportion)
+  
+  ggplot(binary_props, aes(x = factor(y), y = proportion, fill = factor(y))) +
+    geom_col(position = "dodge") +
+    facet_wrap(~variable) +
+    labs(title = "Proportion of 1s in Binary Predictors by Target Y",
+         x = "Target Y", y = "Proportion of 1s", fill = "Y") +
+    theme_minimal()
+}
+```
+
+# Model Performance Preview
+What if we train a logistic regression model to predict y based on x1 - x10?
+
+```{r model-preview, echo=FALSE}
+# Fit logistic regression model for performance evaluation
+# Handle categorical variables properly
+model_data <- eda_data
+if("x9" %in% categorical_vars) {
+  model_data$x9 <- as.numeric(as.factor(model_data$x9))
+}
+if("x10" %in% categorical_vars) {
+  model_data$x10 <- as.numeric(as.factor(model_data$x10))
+}
+
+# Fit the model
+model <- glm(y ~ x1 + x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9 + x10, 
+             family = "binomial", data = model_data)
+
+# Display model summary
+cat("Logistic Regression Model Summary:\n")
+cat("================================\n")
+print(summary(model))
+
+# Model predictions
+predictions <- predict(model, type = "response")
+predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+
+# Confusion matrix
+confusion_matrix <- table(Predicted = predicted_classes, Actual = model_data$y)
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+
+cat("\nModel Performance:\n")
+cat("==================\n")
+cat("Accuracy:", round(accuracy * 100, 2), "%\n")
+print(confusion_matrix)
+
+# Additional performance metrics
+sensitivity <- confusion_matrix[2,2] / (confusion_matrix[2,2] + confusion_matrix[1,2])
+specificity <- confusion_matrix[1,1] / (confusion_matrix[1,1] + confusion_matrix[2,1])
+precision <- confusion_matrix[2,2] / (confusion_matrix[2,2] + confusion_matrix[2,1])
+
+cat("\nAdditional Metrics:\n")
+cat("===================\n")
+cat("Sensitivity (Recall):", round(sensitivity * 100, 2), "%\n")
+cat("Specificity:", round(specificity * 100, 2), "%\n")
+cat("Precision:", round(precision * 100, 2), "%\n")
+```
+
+# Conclusions
+
+## Key Findings
+
+1. **Data Quality**: The simulated dataset contains `r nrow(eda_data)` observations with no missing values.
+
+2. **Variable Types**: 
+   - Binary variables: `r paste(binary_vars, collapse = ", ")`
+   - Continuous variables: `r paste(continuous_vars, collapse = ", ")`
+   - Categorical variables `r paste(categorical_vars, collapse = ", ")`
+
+3. **Target Variable**: Y has a balanced distribution with approximately `r round(mean(eda_data$y) * 100, 1)`% positive cases.
+
+4. **Strongest Predictors**: The variables most correlated with Y are:
+   ```{r echo=FALSE}
+   kable(head(cor_with_y, 3), digits = 3)
+   ```
+
+5. **Model Performance**: The logistic regression model achieves `r round(accuracy * 100, 2)`% accuracy on the training data.
+
+---
+
+*Analysis completed on `r Sys.Date()`*
