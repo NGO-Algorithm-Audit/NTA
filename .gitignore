@@ -1,2 +1,4 @@
 notebooks/eda_analysis_cache/
 notebooks/eda_analysis_files/
+*.Rdata
+*.Rhistory
